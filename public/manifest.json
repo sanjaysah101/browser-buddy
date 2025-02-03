@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Browser Buddy",
+  "name": "ProductivityPal",
   "version": "1.0.0",
-  "description": "AI-Powered Productivity Enhancement Extension",
-  "permissions": ["storage"],
+  "description": "Track and improve your productivity",
+  "permissions": ["storage", "tabs", "activeTab"],
   "action": {
     "default_popup": "src/popup/index.html"
   },
