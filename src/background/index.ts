@@ -1,3 +1,5 @@
+import { categorizeWebsite } from "../services/geminiAI";
+
 // Background script
 let ports = new Set<chrome.runtime.Port>();
 
@@ -188,15 +190,14 @@ chrome.runtime.onConnect.addListener((port: chrome.runtime.Port) => {
     });
   }
 
-  port.onMessage.addListener((message) => {
+  port.onMessage.addListener(async (message) => {
     if (message.type === "GET_STATS") {
       port.postMessage({
         type: "STATS_UPDATE",
         data: Array.from(websiteStats.entries()),
         productivityScore: calculateProductivityScore(),
       });
-    }
-    if (message.type === "UPDATE_CATEGORY") {
+    } else if (message.type === "UPDATE_CATEGORY") {
       const { domain, category } = message;
       const stats = websiteStats.get(domain);
       if (stats) {
@@ -212,6 +213,34 @@ chrome.runtime.onConnect.addListener((port: chrome.runtime.Port) => {
 
         // Broadcast update to all connected ports
         broadcastUpdate();
+      }
+    } else if (message.type === "REQUEST_AI_CATEGORIZATION") {
+      try {
+        const { domain } = message;
+        console.log("Requesting AI categorization for:", domain);
+
+        // Get AI-generated category
+        const aiCategory = await categorizeWebsite(domain);
+        console.log("AI categorization result:", aiCategory);
+
+        // Update stats with AI category
+        const stats = websiteStats.get(domain);
+        if (stats) {
+          stats.category = aiCategory;
+          websiteStats.set(domain, stats);
+
+          // Save AI-generated category
+          chrome.storage.local.get(["websiteCategories"], (result) => {
+            const categories = result.websiteCategories || {};
+            categories[domain] = aiCategory;
+            chrome.storage.local.set({ websiteCategories: categories });
+          });
+
+          // Broadcast update to all connected ports
+          broadcastUpdate();
+        }
+      } catch (error) {
+        console.error("Error in AI categorization:", error);
       }
     }
   });

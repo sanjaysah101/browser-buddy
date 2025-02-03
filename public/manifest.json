@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "ProductivityPal",
+  "name": "Productivity Pal",
   "version": "1.0.0",
   "description": "Track and improve your productivity",
-  "permissions": ["storage", "tabs", "activeTab"],
+  "permissions": ["storage", "tabs", "activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
   "action": {
     "default_popup": "src/popup/index.html"
   },

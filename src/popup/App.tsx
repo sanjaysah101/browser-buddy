@@ -1,5 +1,6 @@
 import type React from "react";
 import { useEffect, useState } from "react";
+import { getResponseForGivenPrompt } from "../services/geminiAI";
 
 interface WebsiteStats {
   totalTime: number;
@@ -15,39 +16,84 @@ export const App: React.FC = () => {
   );
   const [port, setPort] = useState<chrome.runtime.Port | null>(null);
 
+  const [prompt, setPrompt] = useState<string>("how are you doing?");
+
+  const handlePromptChange = () => {
+    console.log("object");
+    setPrompt("how are you doing?");
+
+    getResponseForGivenPrompt(prompt).then((response) => {
+      console.log(response);
+    });
+  };
+
   useEffect(() => {
-    const newPort = chrome.runtime.connect({ name: "popup" });
-    setPort(newPort);
-
-    const messageListener = (message: any) => {
-      console.log("Received message:", message);
-      if (message.type === "INITIAL_STATS" || message.type === "STATS_UPDATE") {
-        setStats(message.data);
-        if (message.productivityScore !== undefined) {
-          setProductivityScore(message.productivityScore);
-        }
+    try {
+      if (!chrome?.runtime?.connect) {
+        console.error("Chrome runtime API not available");
+        return;
       }
-    };
 
-    newPort.onMessage.addListener(messageListener);
-    newPort.postMessage({ type: "GET_STATS" });
+      const newPort = chrome.runtime.connect({ name: "popup" });
+      if (!newPort) {
+        console.error("Failed to create port connection");
+        return;
+      }
 
-    return () => {
-      newPort.onMessage.removeListener(messageListener);
-      newPort.disconnect();
-    };
+      setPort(newPort);
+
+      const messageListener = (message: any) => {
+        console.log("Received message:", message);
+        if (
+          message.type === "INITIAL_STATS" ||
+          message.type === "STATS_UPDATE"
+        ) {
+          setStats(message.data);
+          if (message.productivityScore !== undefined) {
+            setProductivityScore(message.productivityScore);
+          }
+        }
+      };
+
+      newPort.onMessage.addListener(messageListener);
+      newPort.postMessage({ type: "GET_STATS" });
+
+      // Handle connection errors
+      newPort.onDisconnect.addListener(() => {
+        console.error("Port disconnected:", chrome.runtime.lastError);
+        setPort(null);
+      });
+
+      return () => {
+        try {
+          newPort.onMessage.removeListener(messageListener);
+          newPort.disconnect();
+        } catch (error) {
+          console.error("Error cleaning up port:", error);
+        }
+      };
+    } catch (error) {
+      console.error("Error setting up connection:", error);
+    }
   }, []);
 
   const updateCategory = (
     domain: string,
     category: WebsiteStats["category"]
   ) => {
-    if (port) {
+    if (!port) {
+      console.error("No active connection to the extension");
+      return;
+    }
+
+    try {
       port.postMessage({
         type: "UPDATE_CATEGORY",
         domain,
         category,
       });
+    } catch (error) {
+      console.error("Error updating category:", error);
     }
   };
 
@@ -62,6 +108,8 @@ export const App: React.FC = () => {
   return (
     <div className="w-[400px] h-[500px] p-4 bg-white overflow-y-auto">
       <h1 className="text-2xl font-bold text-gray-800">ProductivityPal</h1>
+
+      <button onClick={handlePromptChange}>Prompt</button>
 
       {/* Productivity Score */}
       <div className="mt-2 mb-4">
@@ -126,20 +174,36 @@ export const App: React.FC = () => {
               className="p-3 bg-gray-50 rounded-lg shadow-sm flex items-center justify-between"
             >
               <div className="font-medium text-gray-800">{domain}</div>
-              <select
-                value={stats.category}
-                onChange={(e) =>
-                  updateCategory(
-                    domain,
-                    e.target.value as WebsiteStats["category"]
-                  )
-                }
-                className="ml-2 p-1 border rounded"
-              >
-                <option value="productive">Productive</option>
-                <option value="neutral">Neutral</option>
-                <option value="unproductive">Unproductive</option>
-              </select>
+              <div className="flex items-center gap-2">
+                <select
+                  value={stats.category}
+                  onChange={(e) =>
+                    updateCategory(
+                      domain,
+                      e.target.value as WebsiteStats["category"]
+                    )
+                  }
+                  className="p-1 border rounded"
+                >
+                  <option value="productive">Productive</option>
+                  <option value="neutral">Neutral</option>
+                  <option value="unproductive">Unproductive</option>
+                </select>
+                <button
+                  onClick={() => {
+                    if (port) {
+                      port.postMessage({
+                        type: "REQUEST_AI_CATEGORIZATION",
+                        domain,
+                      });
+                    }
+                  }}
+                  className="px-2 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+                  title="Use AI to categorize this website"
+                >
+                  AI
+                </button>
+              </div>
             </div>
           ))}
         </div>
