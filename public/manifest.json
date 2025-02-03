@@ -3,7 +3,7 @@
   "name": "Productivity Pal",
   "version": "1.0.0",
   "description": "Track and improve your productivity",
-  "permissions": ["storage", "tabs", "activeTab", "scripting"],
+  "permissions": ["storage", "tabs", "activeTab", "scripting", "notifications"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_popup": "src/popup/index.html"

@@ -11,11 +11,18 @@ interface WebsiteStats {
 export const App: React.FC = () => {
   const [stats, setStats] = useState<[string, WebsiteStats][]>([]);
   const [productivityScore, setProductivityScore] = useState<number>(100);
-  const [selectedTab, setSelectedTab] = useState<"stats" | "categories">(
-    "stats"
-  );
+  const [selectedTab, setSelectedTab] = useState<
+    "stats" | "categories" | "settings"
+  >("stats");
   const [port, setPort] = useState<chrome.runtime.Port | null>(null);
   const [isLoading, setIsLoading] = useState<{ [key: string]: boolean }>({});
+  const [breakInterval, setBreakInterval] = useState(30); // minutes
+  const [breakDuration, setBreakDuration] = useState(5); // minutes
+  const [updateStatus, setUpdateStatus] = useState<{
+    show: boolean;
+    success: boolean;
+    message: string;
+  }>({ show: false, success: false, message: "" });
 
   useEffect(() => {
     try {
@@ -42,8 +49,26 @@ export const App: React.FC = () => {
           if (message.productivityScore !== undefined) {
             setProductivityScore(message.productivityScore);
           }
-          // Reset loading state for all domains when we get an update
+          if (message.breakSettings) {
+            setBreakInterval(message.breakSettings.breakInterval);
+            setBreakDuration(message.breakSettings.breakDuration);
+          }
           setIsLoading({});
+        }
+
+        if (message.type === "BREAK_SETTINGS_UPDATED") {
+          setUpdateStatus({
+            show: true,
+            success: message.success,
+            message: message.success
+              ? "Break settings updated successfully!"
+              : message.error || "Failed to update break settings",
+          });
+
+          // Hide the status message after 3 seconds
+          setTimeout(() => {
+            setUpdateStatus((prev) => ({ ...prev, show: false }));
+          }, 3000);
         }
       };
 
@@ -116,6 +141,15 @@ export const App: React.FC = () => {
     return `${hours}h ${remainingMinutes}m`;
   };
 
+  const updateBreakSettings = () => {
+    if (!port) return;
+    port.postMessage({
+      type: "UPDATE_BREAK_SETTINGS",
+      breakInterval: breakInterval * 60 * 1000, // convert to milliseconds
+      breakDuration: breakDuration * 60 * 1000,
+    });
+  };
+
   return (
     <div className="w-[400px] h-[500px] p-4 bg-white overflow-y-auto">
       {/* Header */}
@@ -145,23 +179,89 @@ export const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Tab Switcher */}
-      <div className="flex mb-4 border-b">
-        {["stats", "categories"].map((tab) => (
-          <button
-            key={tab}
-            className={`px-4 py-2 text-sm font-medium capitalize transition-colors
-              ${
-                selectedTab === tab
-                  ? "border-b-2 border-blue-500 text-blue-600"
-                  : "text-gray-600 hover:text-gray-800"
-              }`}
-            onClick={() => setSelectedTab(tab as "stats" | "categories")}
-          >
-            {tab}
-          </button>
-        ))}
+      {/* Tabs */}
+      <div className="flex space-x-2 mb-4">
+        <button
+          onClick={() => setSelectedTab("stats")}
+          className={`px-3 py-1 rounded ${
+            selectedTab === "stats" ? "bg-blue-500 text-white" : "bg-gray-100"
+          }`}
+        >
+          Stats
+        </button>
+        <button
+          onClick={() => setSelectedTab("categories")}
+          className={`px-3 py-1 rounded ${
+            selectedTab === "categories"
+              ? "bg-blue-500 text-white"
+              : "bg-gray-100"
+          }`}
+        >
+          Categories
+        </button>
+        <button
+          onClick={() => setSelectedTab("settings")}
+          className={`px-3 py-1 rounded ${
+            selectedTab === "settings"
+              ? "bg-blue-500 text-white"
+              : "bg-gray-100"
+          }`}
+        >
+          Settings
+        </button>
       </div>
+
+      {/* Status Message */}
+      {updateStatus.show && (
+        <div
+          className={`fixed top-4 right-4 p-3 rounded-lg shadow-lg text-sm ${
+            updateStatus.success
+              ? "bg-green-100 text-green-800 border border-green-200"
+              : "bg-red-100 text-red-800 border border-red-200"
+          }`}
+        >
+          {updateStatus.message}
+        </div>
+      )}
+
+      {/* Settings Tab Content */}
+      {selectedTab === "settings" && (
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold">Break Reminder Settings</h2>
+          <div className="space-y-2">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">
+                Break Interval (minutes)
+              </label>
+              <input
+                type="number"
+                min="1"
+                value={breakInterval}
+                onChange={(e) => setBreakInterval(Number(e.target.value))}
+                className="mt-1 block w-full rounded-md border border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">
+                Break Duration (minutes)
+              </label>
+              <input
+                type="number"
+                min="1"
+                value={breakDuration}
+                onChange={(e) => setBreakDuration(Number(e.target.value))}
+                className="mt-1 block w-full rounded-md border border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2"
+              />
+            </div>
+            <button
+              onClick={updateBreakSettings}
+              className="w-full px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+            >
+              Save Settings
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       {selectedTab === "stats" ? (
@@ -197,7 +297,7 @@ export const App: React.FC = () => {
               </div>
             ))}
         </div>
-      ) : (
+      ) : selectedTab === "categories" ? (
         <div className="space-y-3">
           {stats.map(([domain, stats]) => (
             <div
@@ -272,7 +372,7 @@ export const App: React.FC = () => {
             </div>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 };

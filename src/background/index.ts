@@ -43,6 +43,28 @@ const defaultCategories: { [key: Domain]: WebsiteCategory["category"] } = {
 // Add this near the top of the file
 let activeTabId: number | null = null;
 
+// Add these constants at the top with other global variables
+const BREAK_REMINDER_INTERVAL = 30 * 60 * 1000; // 30 minutes in milliseconds
+const BREAK_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+let lastBreakTime: number = Date.now();
+let breakNotificationId: string | null = null;
+
+// Add these interfaces and message handlers to handle break settings
+interface BreakSettings {
+  breakInterval: number;
+  breakDuration: number;
+}
+
+// Add to the top with other global variables
+let breakSettings: BreakSettings = {
+  breakInterval: BREAK_REMINDER_INTERVAL,
+  breakDuration: BREAK_DURATION,
+};
+
+// Add these variables to track break state
+let isOnBreak = false;
+let breakTimer: NodeJS.Timeout | null = null;
+
 // Helper to get domain from URL
 function getDomain(url: string): Domain {
   try {
@@ -73,6 +95,8 @@ async function handleTabChange(tab: chrome.tabs.Tab) {
       domain: getDomain(tab.url),
       startTime: now,
     };
+    // Check for break reminder when tab changes
+    await checkBreakReminder();
   }
 }
 
@@ -187,6 +211,16 @@ chrome.runtime.onConnect.addListener((port: chrome.runtime.Port) => {
     port.postMessage({
       type: "INITIAL_STATS",
       data: Array.from(websiteStats.entries()),
+      productivityScore: calculateProductivityScore(),
+      breakSettings: {
+        breakInterval: breakSettings.breakInterval / (60 * 1000), // convert to minutes
+        breakDuration: breakSettings.breakDuration / (60 * 1000),
+      },
+      breakStatus: {
+        isOnBreak,
+        lastBreakTime,
+        nextBreakTime: lastBreakTime + breakSettings.breakInterval,
+      },
     });
   }
 
@@ -242,6 +276,41 @@ chrome.runtime.onConnect.addListener((port: chrome.runtime.Port) => {
       } catch (error) {
         console.error("Error in AI categorization:", error);
       }
+    } else if (message.type === "UPDATE_BREAK_SETTINGS") {
+      try {
+        const { breakInterval, breakDuration } = message;
+        breakSettings = {
+          breakInterval,
+          breakDuration,
+        };
+
+        // Save settings to storage
+        await chrome.storage.local.set({ breakSettings });
+
+        // Reset break timer if currently on break
+        if (isOnBreak) {
+          endBreak();
+        }
+
+        // Reset last break time to avoid immediate notification
+        lastBreakTime = Date.now();
+
+        // Send success response
+        port.postMessage({
+          type: "BREAK_SETTINGS_UPDATED",
+          success: true,
+        });
+
+        // Broadcast new break status
+        broadcastBreakStatus();
+      } catch (error) {
+        console.error("Error updating break settings:", error);
+        port.postMessage({
+          type: "BREAK_SETTINGS_UPDATED",
+          success: false,
+          error: "Failed to update break settings",
+        });
+      }
     }
   });
 
@@ -286,4 +355,126 @@ chrome.runtime.onSuspend.addListener(() => {
     }
   });
   ports.clear();
+  if (breakTimer) {
+    clearTimeout(breakTimer);
+  }
+});
+
+// Add this function to check if a break is needed
+async function checkBreakReminder() {
+  const now = Date.now();
+  const timeSinceLastBreak = now - lastBreakTime;
+
+  // Only show reminder if not currently on break and enough time has passed
+  if (
+    !isOnBreak &&
+    timeSinceLastBreak >= breakSettings.breakInterval &&
+    currentVisit
+  ) {
+    // Create break notification
+    const notificationId = "break-reminder-" + now;
+    chrome.notifications.create(notificationId, {
+      type: "basic",
+      iconUrl: "icons/icon-128.png",
+      title: "Time for a Break!",
+      message: `You've been working for ${Math.floor(
+        timeSinceLastBreak / 60000
+      )} minutes. Take a ${Math.floor(
+        breakSettings.breakDuration / 60000
+      )}-minute break!`,
+      buttons: [{ title: "Start Break" }, { title: "Dismiss" }],
+      requireInteraction: true,
+    });
+    breakNotificationId = notificationId;
+  }
+}
+
+// Add notification click handler
+chrome.notifications.onButtonClicked.addListener(
+  (notificationId, buttonIndex) => {
+    if (notificationId === breakNotificationId) {
+      if (buttonIndex === 0) {
+        // Start Break
+        startBreak();
+      } else {
+        // Dismiss
+        chrome.notifications.clear(notificationId);
+      }
+      breakNotificationId = null;
+    }
+  }
+);
+
+// Add these helper functions to manage breaks
+function startBreak() {
+  isOnBreak = true;
+  lastBreakTime = Date.now();
+
+  // Clear any existing break timer
+  if (breakTimer) {
+    clearTimeout(breakTimer);
+  }
+
+  // Create break start notification
+  chrome.notifications.create("break-start", {
+    type: "basic",
+    iconUrl: "icons/icon-128.png",
+    title: "Break Time",
+    message: `Your ${Math.floor(
+      breakSettings.breakDuration / 60000
+    )}-minute break has started. Stretch and rest your eyes!`,
+    requireInteraction: false,
+  });
+
+  // Set timer for break end
+  breakTimer = setTimeout(() => {
+    endBreak();
+  }, breakSettings.breakDuration);
+}
+
+function endBreak() {
+  isOnBreak = false;
+
+  // Clear break timer
+  if (breakTimer) {
+    clearTimeout(breakTimer);
+    breakTimer = null;
+  }
+
+  // Create break end notification
+  chrome.notifications.create("break-end", {
+    type: "basic",
+    iconUrl: "icons/icon-128.png",
+    title: "Break Ended",
+    message: "Time to get back to work!",
+    requireInteraction: true,
+  });
+
+  // Broadcast break end to all connected ports
+  broadcastBreakStatus();
+}
+
+// Add function to broadcast break status
+function broadcastBreakStatus() {
+  ports.forEach((port) => {
+    try {
+      port.postMessage({
+        type: "BREAK_STATUS",
+        isOnBreak,
+        lastBreakTime,
+        nextBreakTime: lastBreakTime + breakSettings.breakInterval,
+      });
+    } catch (error) {
+      console.error("Error broadcasting break status:", error);
+    }
+  });
+}
+
+// Load break settings on startup
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.local.get(["breakSettings"], (result) => {
+    if (result.breakSettings) {
+      breakSettings = result.breakSettings;
+    }
+  });
 });
