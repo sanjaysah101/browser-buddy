@@ -1,26 +1,48 @@
 // Background script
 let ports = new Set<chrome.runtime.Port>();
 
+type Domain = string;
+
 // Store website visit data
 interface WebsiteVisit {
   url: string;
-  domain: string;
+  domain: Domain;
   startTime: number;
   endTime?: number;
   duration?: number;
 }
 
+interface WebsiteCategory {
+  domain: Domain;
+  category: "productive" | "neutral" | "unproductive";
+}
+
 interface WebsiteStats {
   totalTime: number;
   visits: number;
+  category: WebsiteCategory["category"];
 }
 
 // Track current and historical visits
 let currentVisit: WebsiteVisit | null = null;
-const websiteStats = new Map<WebsiteVisit["domain"], WebsiteStats>();
+const websiteStats = new Map<Domain, WebsiteStats>();
+
+// Add this after other global variables
+const defaultCategories: { [key: Domain]: WebsiteCategory["category"] } = {
+  "github.com": "productive",
+  "stackoverflow.com": "productive",
+  "chat.openai.com": "productive",
+  "youtube.com": "unproductive",
+  "facebook.com": "unproductive",
+  "twitter.com": "unproductive",
+  "instagram.com": "unproductive",
+};
+
+// Add this near the top of the file
+let activeTabId: number | null = null;
 
 // Helper to get domain from URL
-function getDomain(url: string): string {
+function getDomain(url: string): Domain {
   try {
     const urlObj = new URL(url);
     return urlObj.hostname;
@@ -29,51 +51,120 @@ function getDomain(url: string): string {
   }
 }
 
-// Triggers when user switches tabs
-chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  const tab = await chrome.tabs.get(activeInfo.tabId);
-  handleTabChange(tab);
-});
-
-// Triggers when a tab's URL changes
-chrome.tabs.onUpdated.addListener(async (_, changeInfo, tab) => {
-  if (changeInfo.url) {
-    handleTabChange(tab);
-  }
-});
-
-function handleTabChange(tab: chrome.tabs.Tab) {
+// Update handleTabChange function
+async function handleTabChange(tab: chrome.tabs.Tab) {
   if (!tab.url || tab.url.startsWith("chrome://")) return;
+
+  const now = Date.now();
 
   // End current visit if exists
   if (currentVisit) {
-    const now = Date.now();
     currentVisit.endTime = now;
     currentVisit.duration = now - currentVisit.startTime;
-    updateStats(currentVisit);
+    await updateStats(currentVisit);
   }
 
-  // Start new visit
-  currentVisit = {
-    url: tab.url,
-    domain: getDomain(tab.url),
-    startTime: Date.now(),
-  };
+  // Only start new visit if this is the active tab
+  if (tab.id === activeTabId) {
+    currentVisit = {
+      url: tab.url,
+      domain: getDomain(tab.url),
+      startTime: now,
+    };
+  }
 }
 
-function updateStats(visit: WebsiteVisit) {
-  const stats = websiteStats.get(visit.domain) || { totalTime: 0, visits: 0 };
+// Update tab listeners
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  activeTabId = activeInfo.tabId;
+  const tab = await chrome.tabs.get(activeTabId);
+  await handleTabChange(tab);
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.url && tabId === activeTabId) {
+    await handleTabChange(tab);
+  }
+});
+
+// Add listener for tab removal
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabId === activeTabId) {
+    if (currentVisit) {
+      const now = Date.now();
+      currentVisit.endTime = now;
+      currentVisit.duration = now - currentVisit.startTime;
+      updateStats(currentVisit);
+      currentVisit = null;
+    }
+    activeTabId = null;
+  }
+});
+
+async function getWebsiteCategory(
+  domain: Domain
+): Promise<WebsiteCategory["category"]> {
+  // Return default category if available
+  if (defaultCategories[domain]) {
+    return defaultCategories[domain];
+  }
+
+  // Get saved categories asynchronously
+  const result = await chrome.storage.local.get(["websiteCategories"]);
+  if (result.websiteCategories?.[domain]) {
+    return result.websiteCategories[domain];
+  }
+
+  return "neutral";
+}
+
+// Update updateStats to handle async
+async function updateStats(visit: WebsiteVisit) {
+  const category = await getWebsiteCategory(visit.domain);
+  const stats = websiteStats.get(visit.domain) || {
+    totalTime: 0,
+    visits: 0,
+    category,
+  };
+
   stats.totalTime += visit.duration || 0;
   stats.visits += 1;
   websiteStats.set(visit.domain, stats);
 
+  // Calculate productivity score
+  const productivityScore = calculateProductivityScore();
+
   // Notify connected ports about stats update
+  broadcastUpdate();
+}
+
+function calculateProductivityScore(): number {
+  let productiveTime = 0;
+  let unproductiveTime = 0;
+  let totalTime = 0;
+
+  websiteStats.forEach((stats, domain) => {
+    totalTime += stats.totalTime;
+    if (stats.category === "productive") {
+      productiveTime += stats.totalTime;
+    } else if (stats.category === "unproductive") {
+      unproductiveTime += stats.totalTime;
+    }
+  });
+
+  if (totalTime === 0) return 100;
+  return Math.round((productiveTime / totalTime) * 100);
+}
+
+// Add a helper function to broadcast updates
+function broadcastUpdate() {
+  const data = Array.from(websiteStats.entries());
+  const productivityScore = calculateProductivityScore();
+
   const message = {
     type: "STATS_UPDATE",
-    data: {
-      domain: visit.domain,
-      stats: stats,
-    },
+    data,
+    productivityScore,
   };
 
   ports.forEach((port) => {
@@ -102,7 +193,26 @@ chrome.runtime.onConnect.addListener((port: chrome.runtime.Port) => {
       port.postMessage({
         type: "STATS_UPDATE",
         data: Array.from(websiteStats.entries()),
+        productivityScore: calculateProductivityScore(),
       });
+    }
+    if (message.type === "UPDATE_CATEGORY") {
+      const { domain, category } = message;
+      const stats = websiteStats.get(domain);
+      if (stats) {
+        stats.category = category;
+        websiteStats.set(domain, stats);
+
+        // Save category to chrome.storage
+        chrome.storage.local.get(["websiteCategories"], (result) => {
+          const categories = result.websiteCategories || {};
+          categories[domain] = category;
+          chrome.storage.local.set({ websiteCategories: categories });
+        });
+
+        // Broadcast update to all connected ports
+        broadcastUpdate();
+      }
     }
   });
 
