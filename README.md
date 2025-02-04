@@ -25,6 +25,11 @@ Productivity Pal is a Chrome extension designed to help users track and improve 
 - ⚙️ Customizable settings
 - 🎨 Modern design with Tailwind CSS
 
+## Demo
+
+[![Productivity Pal | Chrome Extension](https://img.youtube.com/vi/pWEe6_GOU1o/0.jpg)](https://youtu.be/pWEe6_GOU1o)
+
+
 ## Installation
 
 1. Clone the repository:
